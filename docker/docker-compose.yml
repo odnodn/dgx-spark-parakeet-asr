@@ -8,7 +8,7 @@
 #
 #   bash ~/parakeet-spark/build-and-deploy.sh
 #
-# That script builds the image: parakeet-tdt-v3-spark:latest
+# That script builds the image: parakeet-tdt-v3-diarization-spark:latest
 # This stack then references that local image.
 #
 # In Portainer:
@@ -26,8 +26,8 @@ services:
   # 25 European languages with auto-detection
   # Endpoint: http://<spark-ip>:8010/v1/audio/transcriptions
   parakeet-asr:
-    image: parakeet-tdt-v3-spark:latest
-    container_name: parakeet-asr
+    image: parakeet-tdt-v3-diarization-spark:latest
+    container_name: parakeet-asr-diarization
     restart: unless-stopped
     environment:
       - NGC_API_KEY=${NGC_API_KEY}

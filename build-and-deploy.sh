@@ -139,13 +139,13 @@ info "Expected build time: 15-30 minutes (first time)"
 echo ""
 
 docker build \
-    --tag parakeet-tdt-v3-spark:latest \
+    --tag parakeet-tdt-v3-diarization-spark:latest \
     --progress=plain \
     --shm-size=8g \
     -f docker/Dockerfile \
     .
 
-ok "Parakeet ASR container built: parakeet-tdt-v3-spark:latest"
+ok "Parakeet ASR container built: parakeet-tdt-v3-diarization-spark:latest"
 
 # =============================================================================
 # STEP 6: Quick smoke test of ASR container
@@ -159,7 +159,7 @@ SMOKE_ID=$(docker run -d --rm \
     --shm-size=8g \
     --name parakeet-smoke-test \
     -e CUDA_VISIBLE_DEVICES=0 \
-    parakeet-tdt-v3-spark:latest \
+    parakeet-tdt-v3-diarization-spark:latest \
     python3 -c "
 import torch
 print(f'CUDA available: {torch.cuda.is_available()}')
@@ -239,7 +239,7 @@ case $DEPLOY_CHOICE in
         echo ""
         echo "  6. Click 'Deploy the stack'"
         echo ""
-        echo "  NOTE: The parakeet-asr image was already built locally."
+        echo "  NOTE: The parakeet-tdt-v3-diarization-spark image was already built locally."
         echo "        Portainer will find it by the image name."
         echo ""
         ;;
@@ -257,7 +257,7 @@ echo " Setup Complete!"
 echo "============================================================"
 echo ""
 echo "  Built images:"
-echo "    • parakeet-tdt-v3-spark:latest (Parakeet ASR)"
+echo "    • parakeet-tdt-v3-diarization-spark:latest (Parakeet ASR)"
 echo ""
 echo "  Endpoints (after deployment):"
 echo "    ASR Transcription:  http://<spark-ip>:8010/v1/audio/transcriptions"
