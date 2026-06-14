@@ -4,6 +4,7 @@ Parakeet TDT 0.6b v3 — OpenAI-Compatible ASR API
 Endpoints:
   POST /v1/audio/transcriptions   — OpenAI Whisper-compatible transcription
   POST /v1/audio/translations     — (stub) maps to transcription
+  POST /v1/audio/diarizations     — Speaker diarization (Sortformer)
   GET  /health                    — Health check
   GET  /v1/models                 — List available models
   GET  /                          — Service info
@@ -26,6 +27,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.transcriber import transcriber, MODEL_NAME, DEVICE
+from app.diarization import get_diarization_backend, list_backends
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -35,6 +37,10 @@ logging.basicConfig(
 logger = logging.getLogger("parakeet-api")
 
 
+# ── Diarization configuration ────────────────────────────────────────────────
+ENABLE_DIARIZATION = os.getenv("ENABLE_DIARIZATION", "true").lower() in ("1", "true", "yes")
+
+
 # ── Lifespan: load model at startup ─────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -42,15 +48,28 @@ async def lifespan(app: FastAPI):
     logger.info("Parakeet TDT 0.6b v3 — Starting up")
     logger.info(f"  Model:  {MODEL_NAME}")
     logger.info(f"  Device: {DEVICE}")
+    logger.info(f"  Diarization: {'enabled' if ENABLE_DIARIZATION else 'disabled'}")
     if torch.cuda.is_available():
         logger.info(f"  GPU:    {torch.cuda.get_device_name(0)}")
         mem = torch.cuda.get_device_properties(0).total_memory / (1024**3)
         logger.info(f"  VRAM:   {mem:.1f} GB")
     logger.info("="*60)
 
-    # Load model (downloads on first run, ~1.2 GB)
+    # Load ASR model (downloads on first run, ~1.2 GB)
     transcriber.load_model()
-    logger.info("Model ready — accepting requests")
+    logger.info("ASR model ready")
+
+    # Load diarization model if enabled
+    if ENABLE_DIARIZATION:
+        try:
+            diarizer = get_diarization_backend()
+            diarizer.load_model()
+            logger.info(f"Diarization model ready (backend: {diarizer.name})")
+        except Exception as e:
+            logger.warning(f"Diarization model failed to load: {e}")
+            logger.warning("Diarization endpoints will return 503 until model is available")
+
+    logger.info("All models ready — accepting requests")
 
     yield
 
@@ -78,6 +97,21 @@ app.add_middleware(
 # ── GET / — Service info ────────────────────────────────────────────────────
 @app.get("/")
 async def root():
+    diarization_info = None
+    if ENABLE_DIARIZATION:
+        try:
+            diarizer = get_diarization_backend()
+            diarization_info = {
+                "enabled": True,
+                "backend": diarizer.name,
+                "ready": diarizer.is_loaded,
+                "available_backends": list_backends(),
+            }
+        except Exception:
+            diarization_info = {"enabled": True, "ready": False}
+    else:
+        diarization_info = {"enabled": False}
+
     return {
         "service": "parakeet-asr",
         "model": MODEL_NAME,
@@ -86,9 +120,11 @@ async def root():
         "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
         "endpoints": {
             "transcribe": "/v1/audio/transcriptions",
+            "diarize": "/v1/audio/diarizations",
             "models": "/v1/models",
             "health": "/health",
         },
+        "diarization": diarization_info,
         "supported_languages": [
             "en", "de", "fr", "es", "it", "pt", "nl", "pl", "ru", "uk",
             "cs", "sk", "sl", "hr", "bg", "ro", "hu", "el", "da", "sv",
@@ -106,36 +142,57 @@ async def health():
         total = torch.cuda.get_device_properties(0).total_memory / (1024**3)
         gpu_mem = {"allocated_gb": round(allocated, 2), "total_gb": round(total, 1)}
 
+    diarization_status = "disabled"
+    if ENABLE_DIARIZATION:
+        try:
+            diarizer = get_diarization_backend()
+            diarization_status = "ready" if diarizer.is_loaded else "loading"
+        except Exception:
+            diarization_status = "error"
+
     return {
         "status": "ready" if transcriber._loaded else "loading",
         "model": MODEL_NAME,
         "device": DEVICE,
         "gpu_memory": gpu_mem,
+        "diarization": diarization_status,
     }
 
 
 # ── GET /v1/models — OpenAI-compatible model list ───────────────────────────
 @app.get("/v1/models")
 async def list_models():
+    models = [
+        {
+            "id": "parakeet-tdt-0.6b-v3",
+            "object": "model",
+            "created": 1723593600,  # Aug 2025
+            "owned_by": "nvidia",
+            "permission": [],
+        },
+        {
+            "id": "whisper-1",
+            "object": "model",
+            "created": 1723593600,
+            "owned_by": "nvidia",
+            "permission": [],
+            "_note": "Alias — routes to parakeet-tdt-0.6b-v3 for OpenAI client compat",
+        },
+    ]
+
+    if ENABLE_DIARIZATION:
+        models.append({
+            "id": "diar_sortformer_4spk-v1",
+            "object": "model",
+            "created": 1723593600,
+            "owned_by": "nvidia",
+            "permission": [],
+            "_note": "NVIDIA Sortformer speaker diarization (up to 4 speakers)",
+        })
+
     return {
         "object": "list",
-        "data": [
-            {
-                "id": "parakeet-tdt-0.6b-v3",
-                "object": "model",
-                "created": 1723593600,  # Aug 2025
-                "owned_by": "nvidia",
-                "permission": [],
-            },
-            {
-                "id": "whisper-1",
-                "object": "model",
-                "created": 1723593600,
-                "owned_by": "nvidia",
-                "permission": [],
-                "_note": "Alias — routes to parakeet-tdt-0.6b-v3 for OpenAI client compat",
-            },
-        ],
+        "data": models,
     }
 
 
@@ -273,6 +330,110 @@ async def translate(
         response_format=response_format,
         temperature=temperature,
     )
+
+
+# ── POST /v1/audio/diarizations — Speaker diarization endpoint ──────────────
+@app.post("/v1/audio/diarizations")
+async def diarize(
+    file: UploadFile = File(...),
+    model: Optional[str] = Form(default="diar_sortformer_4spk-v1"),
+    num_speakers: Optional[int] = Form(default=None),
+    min_speakers: Optional[int] = Form(default=None),
+    max_speakers: Optional[int] = Form(default=None),
+    response_format: Optional[str] = Form(default="verbose_json"),
+):
+    """
+    Speaker diarization endpoint.
+
+    Identifies who spoke when in the audio. Returns speaker-labeled time segments.
+
+    Parameters:
+      - file: Audio file (wav, mp3, flac, ogg, webm, m4a, mp4, etc.)
+      - model: Diarization model (default: diar_sortformer_4spk-v1)
+      - num_speakers: Exact number of speakers (if known)
+      - min_speakers: Minimum expected speakers
+      - max_speakers: Maximum expected speakers (Sortformer supports up to 4)
+      - response_format: 'verbose_json' (default) or 'json'
+    """
+    if not ENABLE_DIARIZATION:
+        raise HTTPException(
+            status_code=501,
+            detail="Speaker diarization is disabled. Set ENABLE_DIARIZATION=true to enable.",
+        )
+
+    try:
+        diarizer = get_diarization_backend()
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    if not diarizer.is_loaded:
+        raise HTTPException(
+            status_code=503,
+            detail="Diarization model is still loading. Try again shortly.",
+        )
+
+    # Validate file
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+
+    # Read audio bytes
+    try:
+        audio_bytes = await file.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read audio file: {e}")
+
+    if len(audio_bytes) == 0:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+
+    # Check file size
+    max_size = int(os.getenv("MAX_UPLOAD_MB", "200")) * 1024 * 1024
+    if len(audio_bytes) > max_size:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Max size: {max_size // (1024*1024)} MB",
+        )
+
+    logger.info(
+        f"Diarization request: {file.filename} "
+        f"({len(audio_bytes) / 1024:.0f} KB, speakers={num_speakers})"
+    )
+
+    start_time = time.time()
+
+    try:
+        result = diarizer.diarize(
+            audio_bytes=audio_bytes,
+            filename=file.filename,
+            num_speakers=num_speakers,
+            min_speakers=min_speakers,
+            max_speakers=max_speakers,
+        )
+    except Exception as e:
+        logger.exception("Diarization failed")
+        raise HTTPException(status_code=500, detail=f"Diarization failed: {e}")
+
+    elapsed = time.time() - start_time
+
+    logger.info(
+        f"Diarization complete: {result.duration:.1f}s audio, "
+        f"{result.num_speakers} speakers in {elapsed:.1f}s"
+    )
+
+    # Format response
+    if response_format == "json":
+        return {
+            "num_speakers": result.num_speakers,
+            "segments": [s.to_dict() for s in result.segments],
+        }
+
+    # Default: verbose_json
+    return {
+        "task": "diarize",
+        "duration": result.duration,
+        "num_speakers": result.num_speakers,
+        "backend": result.backend,
+        "segments": [s.to_dict() for s in result.segments],
+    }
 
 
 # ── Subtitle formatters ─────────────────────────────────────────────────────

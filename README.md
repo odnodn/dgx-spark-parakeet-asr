@@ -1,12 +1,13 @@
 # Parakeet TDT 0.6b v3 — DGX Spark Voice Agent
 
-Multilingual Speech-to-Text (ASR) running on NVIDIA DGX Spark (ARM64 / CUDA 13 / Blackwell GB10) in Docker.
+Multilingual Speech-to-Text (ASR) and Speaker Diarization running on NVIDIA DGX Spark (ARM64 / CUDA 13 / Blackwell GB10) in Docker.
 
 ## What You Get
 
 | Service | Model | Languages | Port | API |
 |---------|-------|-----------|------|-----|
 | **ASR** | Parakeet TDT 0.6b v3 | 25 European | 8010 | OpenAI-compatible |
+| **Diarization** | Sortformer 4spk v1 | Language-agnostic | 8010 | OpenAI-style |
 
 ASR supported languages: Bulgarian, Croatian, Czech, Danish, Dutch, English, Estonian, Finnish, French, German, Greek, Hungarian, Italian, Latvian, Lithuanian, Maltese, Polish, Portuguese, Romanian, Russian, Slovak, Slovenian, Spanish, Swedish, Ukrainian
 
@@ -156,6 +157,26 @@ curl -s http://localhost:8010/v1/audio/transcriptions \
 | `language` | string | `auto` | Language code: `en`, `de`, `fr`, etc. |
 | `response_format` | string | `json` | `json`, `text`, `verbose_json`, `srt`, `vtt` |
 
+### POST /v1/audio/diarizations
+Speaker diarization endpoint — identifies who spoke when.
+
+```bash
+curl -s http://localhost:8010/v1/audio/diarizations \
+    -F file="@meeting.wav" \
+    -F num_speakers=2 \
+    | python3 -m json.tool
+```
+
+**Parameters (multipart form):**
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `file` | file | required | Audio file |
+| `num_speakers` | int | auto | Exact number of speakers (if known) |
+| `max_speakers` | int | 4 | Maximum speakers (Sortformer limit: 4) |
+| `response_format` | string | `verbose_json` | `verbose_json` or `json` |
+
+> See [docs/speaker-diarization.md](docs/speaker-diarization.md) for full diarization documentation.
+
 ---
 
 ## Integration Examples
@@ -211,10 +232,17 @@ parakeet-spark/
 ├── docker/
 │   ├── Dockerfile              # ARM64 build for DGX Spark
 │   └── docker-compose.yml      # Local build compose file
+├── docs/
+│   └── speaker-diarization.md  # Diarization documentation
 ├── requirements.txt            # Python dependencies
 ├── build-and-deploy.sh         # Automated setup script (for local builds)
 ├── .env.example                # Environment template
 └── app/
     ├── main.py                 # FastAPI server + OpenAI endpoints
-    └── transcriber.py          # NeMo model wrapper + chunking
+    ├── transcriber.py          # NeMo ASR model wrapper + chunking
+    └── diarization/
+        ├── __init__.py         # Public API exports
+        ├── base.py             # Abstract base class
+        ├── factory.py          # Backend registry + instantiation
+        └── sortformer.py       # NVIDIA Sortformer implementation
 ```
