@@ -24,6 +24,12 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 python-multipart>=0.0.9
 
+# ── Speaker Diarization (NVIDIA Sortformer) ──────────────────────────────────
+# NeMo's NeuralDiarizer is included in nemo_toolkit[asr].
+# Additional dependencies for diarization post-processing:
+pyannote.core>=5.0.0
+pyannote.metrics>=3.2.0
+
 # ── Utilities ────────────────────────────────────────────────────────────────
 pyyaml>=6.0
 aiofiles>=24.1.0

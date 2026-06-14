@@ -32,6 +32,9 @@ services:
     environment:
       - NGC_API_KEY=${NGC_API_KEY}
       - PARAKEET_MODEL=nvidia/parakeet-tdt-0.6b-v3
+      - SORTFORMER_MODEL=nvidia/diar_sortformer_4spk-v1
+      - ENABLE_DIARIZATION=true
+      - DIARIZATION_BACKEND=sortformer
       - MAX_SEGMENT_SECONDS=1200
       - MAX_UPLOAD_MB=200
       - HF_HOME=/cache/huggingface
