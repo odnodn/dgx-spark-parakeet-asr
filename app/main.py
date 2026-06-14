@@ -539,13 +539,16 @@ def _assign_text_to_segments(result, transcript: dict) -> None:
         word_idx = 0
 
         for seg in result.segments:
+            if word_idx >= total_words:
+                break
             seg_duration = seg.end - seg.start
             proportion = seg_duration / total_duration
-            word_count = max(1, round(proportion * total_words))
-            seg_words = words[word_idx:word_idx + word_count]
+            word_count = round(proportion * total_words)
+            end_idx = min(word_idx + word_count, total_words)
+            seg_words = words[word_idx:end_idx]
             if seg_words:
                 seg.text = " ".join(seg_words)
-            word_idx += word_count
+            word_idx = end_idx
 
 
 # ── Subtitle formatters ─────────────────────────────────────────────────────
