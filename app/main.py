@@ -4,7 +4,7 @@ Parakeet TDT 0.6b v3 — OpenAI-Compatible ASR API
 Endpoints:
   POST /v1/audio/transcriptions   — OpenAI Whisper-compatible transcription
   POST /v1/audio/translations     — (stub) maps to transcription
-  POST /v1/audio/diarizations     — Speaker diarization (Sortformer)
+  POST /v1/audio/diarizations     — Speaker diarization + transcription (Sortformer)
   GET  /health                    — Health check
   GET  /v1/models                 — List available models
   GET  /                          — Service info
@@ -332,6 +332,13 @@ async def translate(
     )
 
 
+# ── Default speaker names by count ───────────────────────────────────────────
+DEFAULT_SPEAKER_NAMES = {
+    2: "Arzt,Patient",
+    3: "Arzt,Patient,Begleitung",
+}
+
+
 # ── POST /v1/audio/diarizations — Speaker diarization endpoint ──────────────
 @app.post("/v1/audio/diarizations")
 async def diarize(
@@ -340,12 +347,16 @@ async def diarize(
     num_speakers: Optional[int] = Form(default=None),
     min_speakers: Optional[int] = Form(default=None),
     max_speakers: Optional[int] = Form(default=None),
+    speaker_names: Optional[str] = Form(default=None),
+    transcribe_audio: Optional[bool] = Form(default=True),
+    language: Optional[str] = Form(default=None),
     response_format: Optional[str] = Form(default="verbose_json"),
 ):
     """
-    Speaker diarization endpoint.
+    Speaker diarization endpoint with optional transcription.
 
-    Identifies who spoke when in the audio. Returns speaker-labeled time segments.
+    Identifies who spoke when in the audio. Returns speaker-labeled time segments
+    with transcribed text for each segment.
 
     Parameters:
       - file: Audio file (wav, mp3, flac, ogg, webm, m4a, mp4, etc.)
@@ -353,6 +364,10 @@ async def diarize(
       - num_speakers: Exact number of speakers (if known)
       - min_speakers: Minimum expected speakers
       - max_speakers: Maximum expected speakers (Sortformer supports up to 4)
+      - speaker_names: Comma-separated speaker names (e.g. "Arzt,Patient").
+            Defaults: "Arzt,Patient" for 2 speakers, "Arzt,Patient,Begleitung" for 3.
+      - transcribe_audio: Whether to transcribe and assign text to segments (default: true)
+      - language: Language code for transcription (e.g. 'de', 'en')
       - response_format: 'verbose_json' (default) or 'json'
     """
     if not ENABLE_DIARIZATION:
@@ -412,6 +427,23 @@ async def diarize(
         logger.exception("Diarization failed")
         raise HTTPException(status_code=500, detail=f"Diarization failed: {e}")
 
+    # ── Transcribe and assign text to segments ───────────────────────────
+    if transcribe_audio and transcriber._loaded and result.segments:
+        try:
+            transcript = transcriber.transcribe(
+                audio_bytes=audio_bytes,
+                filename=file.filename,
+                language=language,
+                timestamps=True,
+            )
+            _assign_text_to_segments(result, transcript)
+        except Exception as e:
+            logger.warning(f"Transcription for diarization failed: {e}")
+            # Continue without text — diarization segments still valid
+
+    # ── Apply speaker names ──────────────────────────────────────────────
+    _apply_speaker_names(result, speaker_names, num_speakers)
+
     elapsed = time.time() - start_time
 
     logger.info(
@@ -434,6 +466,86 @@ async def diarize(
         "backend": result.backend,
         "segments": [s.to_dict() for s in result.segments],
     }
+
+
+def _apply_speaker_names(
+    result,
+    speaker_names: Optional[str],
+    num_speakers: Optional[int],
+) -> None:
+    """
+    Replace anonymous speaker labels (speaker_0, speaker_1, ...) with
+    user-provided names or defaults based on speaker count.
+    """
+    # Determine the name list
+    if speaker_names:
+        names = [n.strip() for n in speaker_names.split(",")]
+    else:
+        # Use defaults based on detected or requested speaker count
+        count = num_speakers or result.num_speakers
+        names_str = DEFAULT_SPEAKER_NAMES.get(count)
+        if names_str:
+            names = [n.strip() for n in names_str.split(",")]
+        else:
+            return  # No default mapping — keep original labels
+
+    # Build mapping from anonymous labels to names
+    unique_speakers = sorted(set(s.speaker for s in result.segments))
+    name_map = {}
+    for i, spk in enumerate(unique_speakers):
+        if i < len(names):
+            name_map[spk] = names[i]
+        # else: keep original label
+
+    # Apply mapping
+    for seg in result.segments:
+        if seg.speaker in name_map:
+            seg.speaker = name_map[seg.speaker]
+
+
+def _assign_text_to_segments(result, transcript: dict) -> None:
+    """
+    Assign transcribed text to diarization segments based on time overlap.
+
+    Uses word-level timestamps from the transcription to attribute words
+    to the correct speaker segment.
+    """
+    segments_with_ts = transcript.get("segments", [])
+
+    if segments_with_ts:
+        # Word-level timestamps available — assign by midpoint overlap
+        for diar_seg in result.segments:
+            words = []
+            for word_seg in segments_with_ts:
+                word_mid = (word_seg["start"] + word_seg["end"]) / 2
+                if diar_seg.start <= word_mid <= diar_seg.end:
+                    text = word_seg.get("text", "").strip()
+                    if text:
+                        words.append(text)
+            if words:
+                diar_seg.text = " ".join(words)
+    else:
+        # No timestamps — split full text proportionally by segment duration
+        full_text = transcript.get("text", "").strip()
+        if not full_text or not result.segments:
+            return
+
+        total_duration = sum(s.end - s.start for s in result.segments)
+        if total_duration == 0:
+            return
+
+        words = full_text.split()
+        total_words = len(words)
+        word_idx = 0
+
+        for seg in result.segments:
+            seg_duration = seg.end - seg.start
+            proportion = seg_duration / total_duration
+            word_count = max(1, round(proportion * total_words))
+            seg_words = words[word_idx:word_idx + word_count]
+            if seg_words:
+                seg.text = " ".join(seg_words)
+            word_idx += word_count
 
 
 # ── Subtitle formatters ─────────────────────────────────────────────────────
