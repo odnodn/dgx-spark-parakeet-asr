@@ -44,8 +44,8 @@ Save the following as `docker-compose.yml` in that folder:
 version: '3.8'
 services:
   parakeet-asr:
-    image: martinb78/parakeet-tdt-v3-spark:latest
-    container_name: parakeet-asr
+    image: martinb78/parakeet-tdt-v3-diarization-spark:latest
+    container_name: parakeet-asr-diarization
     restart: unless-stopped
     environment:
       - NGC_API_KEY=${NGC_API_KEY}
@@ -102,7 +102,7 @@ echo "$NGC_API_KEY" | docker login nvcr.io -u '$oauthtoken' --password-stdin
 docker pull nvcr.io/nvidia/pytorch:25.11-py3
 
 # Build the local container (takes 15-30 minutes)
-docker build --tag parakeet-tdt-v3-spark:latest -f docker/Dockerfile .
+docker build --tag parakeet-tdt-v3-diarization-spark:latest -f docker/Dockerfile .
 ```
 
 **Step 4: Start the stack**
