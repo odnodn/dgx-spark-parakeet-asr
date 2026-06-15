@@ -22,12 +22,13 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 import torch
-from fastapi import FastAPI, File, Form, UploadFile, HTTPException
+from fastapi import FastAPI, File, Form, UploadFile, HTTPException, WebSocket
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.transcriber import transcriber, MODEL_NAME, DEVICE
 from app.diarization import get_diarization_backend, list_backends
+from app.realtime import RealtimeWebSocketHandler, RivaStreamingClient
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -40,6 +41,9 @@ logger = logging.getLogger("parakeet-api")
 # ── Diarization configuration ────────────────────────────────────────────────
 ENABLE_DIARIZATION = os.getenv("ENABLE_DIARIZATION", "true").lower() in ("1", "true", "yes")
 
+# ── Realtime streaming configuration ────────────────────────────────────────
+ENABLE_REALTIME = os.getenv("ENABLE_REALTIME", "true").lower() in ("1", "true", "yes")
+
 
 # ── Lifespan: load model at startup ─────────────────────────────────────────
 @asynccontextmanager
@@ -49,6 +53,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"  Model:  {MODEL_NAME}")
     logger.info(f"  Device: {DEVICE}")
     logger.info(f"  Diarization: {'enabled' if ENABLE_DIARIZATION else 'disabled'}")
+    logger.info(f"  Realtime:    {'enabled' if ENABLE_REALTIME else 'disabled'}")
     if torch.cuda.is_available():
         logger.info(f"  GPU:    {torch.cuda.get_device_name(0)}")
         mem = torch.cuda.get_device_properties(0).total_memory / (1024**3)
@@ -68,6 +73,14 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Diarization model failed to load: {e}")
             logger.warning("Diarization endpoints will return 503 until model is available")
+
+    # Check realtime streaming availability
+    if ENABLE_REALTIME:
+        riva_client = RivaStreamingClient()
+        if riva_client.is_available:
+            logger.info(f"Realtime streaming ready (backend: {riva_client.name}, url: {os.getenv('RIVA_ASR_URL', 'ws://localhost:50051/asr/ws')})")
+        else:
+            logger.warning("Realtime streaming enabled but Riva/NIM not configured. Set RIVA_ASR_URL.")
 
     logger.info("All models ready — accepting requests")
 
@@ -121,10 +134,16 @@ async def root():
         "endpoints": {
             "transcribe": "/v1/audio/transcriptions",
             "diarize": "/v1/audio/diarizations",
+            "realtime": "/v1/realtime/transcriptions",
             "models": "/v1/models",
             "health": "/health",
         },
         "diarization": diarization_info,
+        "realtime": {
+            "enabled": ENABLE_REALTIME,
+            "backend": "riva-nim-websocket",
+            "url": os.getenv("RIVA_ASR_URL", "ws://localhost:50051/asr/ws") if ENABLE_REALTIME else None,
+        },
         "supported_languages": [
             "en", "de", "fr", "es", "it", "pt", "nl", "pl", "ru", "uk",
             "cs", "sk", "sl", "hr", "bg", "ro", "hu", "el", "da", "sv",
@@ -599,3 +618,24 @@ def _to_vtt(result: dict) -> str:
         end = _format_timestamp_vtt(seg.get("end", 0))
         lines.append(f"{start} --> {end}\n{seg.get('text', '')}\n")
     return "\n".join(lines)
+
+
+# ── WebSocket /v1/realtime/transcriptions — Realtime streaming ASR ───────────
+@app.websocket("/v1/realtime/transcriptions")
+async def realtime_transcribe(websocket: WebSocket):
+    """
+    WebSocket endpoint for realtime streaming ASR via Riva/NIM.
+
+    Protocol:
+      1. Connect to ws://<host>/v1/realtime/transcriptions
+      2. Send JSON config: {"type": "config", "language": "en-US", ...}
+      3. Stream raw audio bytes (PCM 16-bit, 16kHz mono)
+      4. Receive JSON transcripts: {"type": "transcript", "text": "...", "is_final": bool}
+      5. Send {"type": "eos"} or close connection to end session
+    """
+    if not ENABLE_REALTIME:
+        await websocket.close(code=4001, reason="Realtime streaming is disabled")
+        return
+
+    handler = RealtimeWebSocketHandler()
+    await handler.handle(websocket)
