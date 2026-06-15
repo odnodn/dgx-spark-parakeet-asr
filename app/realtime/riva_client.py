@@ -77,7 +77,7 @@ class RivaStreamingClient(StreamingASRBackend):
         """Build WebSocket connection headers."""
         headers = {}
         if self._api_key:
-            headers["Authorization"] = f"******"
+            headers["Authorization"] = f"Bearer {self._api_key}"
         return headers
 
     def _build_config_message(self, config: StreamingConfig) -> str:
